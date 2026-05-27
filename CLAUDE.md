@@ -12,49 +12,72 @@ Open `index.html` directly in a browser. No build step, no server required.
 
 ## Architecture (all within index.html)
 
-**Rendering**: Raycasting engine casts one ray per screen column (960×600 canvas) using DDA through a 32×24 tile map. Walls are vertical strips with distance-based shading. Column merging optimizes consecutive same-type walls. Enemies are billboard sprites with depth-buffer testing. Smoke clouds and fire zones are rendered as sprites with alpha blending.
+**Rendering**: Raycasting engine casts one ray per screen column (960×600 canvas) using DDA through a 128×96 tile map (`MAP` is a `Uint8Array` of size 12288). Walls are vertical strips with distance-based shading and a dark fog at far distances. Column merging optimizes consecutive same-type walls. Enemies are billboard sprites with depth-buffer testing. Smoke clouds use animated multi-puff radial gradients for a volumetric look. Fire zones flicker via animated radial gradients.
 
-**Maps**: `MAPS` array contains 3 maps (Dust II, Inferno, Mirage). `MAP` is the currently active map. `0` = open, `1-5` = wall types with colors in `WALL_CLR`.
+**Maps**: All three CS2 classics are 1:1 reproductions of the topology — `buildDust2()`, `buildInferno()`, `buildMirage()` carve the level by calling primitives (`fillAll`, `rect`, `clr`, `frame`, `hLine`, `vLine`) on the `Uint8Array`. Each map preserves the actual callouts and connectivity:
+- **Dust II**: T spawn (S), Long Doors → Long A → A site (Goose, Pit, Big box), B Tunnels → B site, Mid + Mid Doors, Catwalk → Short A, CT spawn (N).
+- **Inferno**: T spawn (E), Banana → B site (NW), Mid → Apps → Pit/Library → A site (SW), Boiler/CT spawn.
+- **Mirage**: T spawn (S), Mid → Window/Connector → A, A Ramp → Palace → A site (NE), Underpass → B Apps → B site (NW), Bench/Market.
 
-**Wall Textures**: Procedurally generated on offscreen canvases. Each wall type has noise-based texture with surface detail lines.
+Wall types (1-5): concrete, brick, crate/wood, metal pillar, sandstone — each with its own procedurally generated noise texture.
 
-**Weapons**: 9 weapons: Glock-18, USP-S, Desert Eagle, MP9, P90, AK-47, M4A4, M4A1-S, AWP. Categories: pistol, SMG, rifle, sniper. Buy menu with CS2 economy.
+**Map metadata**: `MAP_DEFS` array holds per-map `{build, pSpawn, eSpawns, sites, callouts}`. Callouts are name+coord pairs rendered on the rotating radar.
 
-**Grenades**: Flashbang (blind enemies), Smoke (vision block), HE (area damage), Molotov (fire zone). Bought separately from weapons.
+**Wall Textures**: Procedurally generated on offscreen canvases. Noise + per-type surface detail (concrete grid lines, brick pattern, wood grain, metal stripes, sandstone speckle).
 
-**Player state**: `P` object tracks position, direction vectors, HP, armor, money, inventory, ammo, visual effects, screen shake, kill streak, bomb mode state, grenade inventory, counter-strafe velocity, scope state.
+**Weapons**: 9 weapons — Glock-18, USP-S, Desert Eagle, MP9, P90, AK-47, M4A4, M4A1-S, AWP. CS2 economy.
 
-**Enemy AI**: 4 types (rusher, soldier, heavy, sniper) with enhanced state machine: patrol (A* pathfinding), combat (type-specific tactics, cover-seeking, flanking), search (last known position), alert (investigate gunfire), stunned (from flashbang). Spawning scales difficulty per round.
+**Spray Patterns**: `SPRAY` table holds per-weapon recoil arrays of `[pitchOffset, yawOffset]` in radians (30 entries for rifles, 20 for SMGs). Each shot increments `P.sprayIdx`; the index resets to 0 after 0.4s without firing. AK climbs straight then S-curves right; M4 is tighter; M4A1-S is the tightest.
 
-**A* Pathfinding**: Grid-based pathfinding with diagonal movement. `findCover()` for tactical cover-seeking.
+**Tagging**: `P.tagT` is set to 0.4s when the player is hit, multiplying movement velocity by 0.4 — matches CS2 tagging slowdown.
 
-**Bomb Mode**: Plant at bomb sites (E key, 3s), 40s fuse, 5s defuse. Objective-based gameplay.
+**Grenades**: Flashbang (blinds proportional to facing angle), Smoke (volumetric multi-puff occlusion that blocks sight for both sides), HE (radius damage to player + enemies), Molotov (fire zone DoT).
 
-**Game Modes**: Bomb Defusal (classic), Deathmatch (infinite respawn, 5min), Arms Race (auto-weapon-upgrade on kill).
+**Player state**: `P` object — position/dir vectors, hp/armor/helmet, money, inventory, ammo per weapon, recoil/recoilYaw, spray index, tag timer, scope state, bomb mode state, grenade counts, counter-strafe velocity.
 
-**Audio**: Procedural via Web Audio API. Noise-based sounds for explosions, footsteps, flashbangs. Oscillator-based for shoot, hit, kill, reload. Layered explosion sounds with white noise + low-frequency oscillator.
+**Enemy AI**: 4 types (rusher, soldier, heavy, sniper) with state machine: patrol (A* pathfinding), combat (type-specific tactics, cover-seeking, flanking), search (last known position), alert (investigate gunfire), stunned (from flashbang). Smoke occludes both LoS and shots. Difficulty scales with `roundNum`.
 
-**Bullet Tracers**: Visual bullet trails with fade-out.
+**A* Pathfinding**: `findPath` uses a binary min-heap; `findCover()` scores nearby tiles by wall-coverage from a threat direction.
 
-**Counter-Strafe**: Player velocity has momentum with deceleration. Stopping quickly improves accuracy.
+**Bomb Mode**: Plant at any of the two bomb sites (E key, 3.2s), 40s fuse, 5s defuse with kit / 10s without. Beep accelerates as fuse runs down.
 
-**HUD**: CS2-style with HP/armor bars, ammo counter, weapon name, money, round timer, round score (CT vs T), minimap with bomb/smoke markers, grenade inventory, kill feed, kill streak display, bomb plant/defuse progress.
+**Round System / MR12**: 24-round match, halftime side switch at round 12 (`halfSwitched`), first to 13 wins. Money resets on side switch. CS2-style loss bonus progression ($1400 + lossStreak × $500, capped).
+
+**Game Modes**: Bomb Defusal (MR12), Deathmatch (infinite respawn, 5min), Arms Race (auto-weapon-upgrade on kill).
+
+**Audio**: Procedural via Web Audio API. Per-weapon-class shoot sounds (pistol, rifle, AWP), layered explosion (white noise + low-frequency oscillator), bomb beeping that accelerates near zero.
+
+**Bullet Tracers**: `tracers` array — short-lived line segments with fade.
+
+**Counter-Strafe + Tagging**: Velocity has momentum (instant-stop on direction change → improved accuracy); `P.tagT` reduces speed when hit.
+
+**HUD**: CS2-styled.
+- Top: round score bar (`CT 0 : 0 T`), round number, buy / round timer (color-coded).
+- Bottom-left: HP/armor bars, money, side indicator, weapon slots, grenade inventory.
+- Bottom-right: ammo + weapon name.
+- Top-right: kill feed, map name.
+- Top-left: rotating radar with callout labels, bomb-site outlines, smoke / fire / planted-bomb markers.
+- Center: dynamic crosshair that spreads with movement & spray index.
+- Tab: scoreboard overlay.
+
+**Rotating Radar**: Top-left circular minimap. Rotates so the player always faces up; bomb sites, smokes, fires, callouts, and visible enemies (LoS-checked, range 22) are drawn on it. Site letters and callout text counter-rotate to stay upright.
 
 **Game loop**: `requestAnimationFrame` with delta-time capped at 0.05s.
 
 ## Controls
 
-- WASD: move (counter-strafe for accuracy)
-- Mouse: aim (Pointer Lock)
+- WASD: move (counter-strafe for accuracy, slowed when tagged)
+- Mouse: aim (Pointer Lock) — slowed when scoped
 - Left-click: shoot
 - Right-click: AWP scope
 - R: reload
-- B: buy menu
+- B: buy menu (only during 15s buy phase)
 - Shift: walk (reduced speed/spread)
-- 1-9: weapon slots
-- E: plant/defuse bomb
-- 4: flashbang
+- 1: melee/knife slot, 2: rifle/SMG, 3: pistol — quick CS-style switch by category
+- 4: flashbang (max 2)
 - 5: smoke
 - 6: HE grenade
 - 7: molotov
-- M: select map (on start screen)
+- E: plant/defuse bomb
+- M (start screen): pick map
+- Tab: hold to view scoreboard
